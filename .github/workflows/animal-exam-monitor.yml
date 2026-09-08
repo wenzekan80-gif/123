@@ -1,0 +1,64 @@
+name: 湖北实验动物考试监控
+
+on:
+  schedule:
+    # GitHub Actions cron uses UTC. Every 5 minutes is the shortest useful cadence here.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      test_notification:
+        description: "Send a test notification only"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: animal-exam-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: animal_exam_monitor/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r animal_exam_monitor/requirements.txt
+
+      - name: Check official 湖北实验动物 site
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          TEST_NOTIFICATION: ${{ inputs.test_notification || 'false' }}
+        run: python animal_exam_monitor/monitor.py
+
+      - name: Persist seen notice IDs
+        if: ${{ success() && github.event_name != 'workflow_dispatch' || (success() && inputs.test_notification == false) }}
+        run: |
+          if git diff --quiet -- animal_exam_monitor/state.json; then
+            echo "No state change to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add animal_exam_monitor/state.json
+          git commit -m "chore: update animal exam monitor state"
+          git pull --rebase origin main
+          git push origin HEAD:main
