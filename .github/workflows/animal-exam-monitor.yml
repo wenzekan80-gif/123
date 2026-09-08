@@ -3,9 +3,13 @@ name: 湖北实验动物考试监控
 on:
   schedule:
     # GitHub only allows scheduled workflows at >=5-minute intervals.
-    # Each run therefore performs five checks about 60 seconds apart, giving
-    # near-1-minute monitoring while the runner is active.
+    # Each normal run therefore performs five checks about 60 seconds apart,
+    # giving near-1-minute monitoring while the runner is active.
     - cron: "*/5 * * * *"
+    # Public repositories can have scheduled workflows disabled after long periods
+    # without repository activity. This monthly heartbeat makes a tiny commit so the
+    # monitor remains active even if no new exam notice appears for months.
+    - cron: "17 3 1 * *"
   workflow_dispatch:
     inputs:
       test_notification:
@@ -77,16 +81,20 @@ jobs:
             fi
           done
 
-      - name: Persist seen notice IDs
+      - name: Monthly keepalive marker
+        if: ${{ github.event_name == 'schedule' && github.event.schedule == '17 3 1 * *' }}
+        run: date -u +"%Y-%m-%dT%H:%M:%SZ" > animal_exam_monitor/.keepalive
+
+      - name: Persist monitor state
         if: ${{ success() && (github.event_name != 'workflow_dispatch' || inputs.test_notification == false) }}
         run: |
-          if git diff --quiet -- animal_exam_monitor/state.json; then
-            echo "No state change to commit."
+          if git diff --quiet -- animal_exam_monitor/state.json animal_exam_monitor/.keepalive; then
+            echo "No state or keepalive change to commit."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add animal_exam_monitor/state.json
+          git add animal_exam_monitor/state.json animal_exam_monitor/.keepalive
           git commit -m "chore: update animal exam monitor state"
           git pull --rebase origin main
           git push origin HEAD:main
