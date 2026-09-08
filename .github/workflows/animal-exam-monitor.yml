@@ -2,7 +2,9 @@ name: 湖北实验动物考试监控
 
 on:
   schedule:
-    # GitHub Actions cron uses UTC. Every 5 minutes is the shortest useful cadence here.
+    # GitHub only allows scheduled workflows at >=5-minute intervals.
+    # Each run therefore performs five checks about 60 seconds apart, giving
+    # near-1-minute monitoring while the runner is active.
     - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
@@ -23,7 +25,7 @@ concurrency:
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 12
 
     steps:
       - name: Checkout repository
@@ -42,15 +44,41 @@ jobs:
       - name: Install dependencies
         run: pip install -r animal_exam_monitor/requirements.txt
 
-      - name: Check official 湖北实验动物 site
+      - name: Send test notification
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.test_notification == true }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-          TEST_NOTIFICATION: ${{ inputs.test_notification || 'false' }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_AUTH_CODE: ${{ secrets.SMTP_AUTH_CODE }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          TEST_NOTIFICATION: "true"
         run: python animal_exam_monitor/monitor.py
 
+      - name: Near-1-minute monitoring window
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_notification == false }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_AUTH_CODE: ${{ secrets.SMTP_AUTH_CODE }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          TEST_NOTIFICATION: "false"
+        run: |
+          for i in 1 2 3 4 5; do
+            echo "=== monitor check $i/5 ==="
+            python animal_exam_monitor/monitor.py
+            if [ "$i" -lt 5 ]; then
+              sleep 60
+            fi
+          done
+
       - name: Persist seen notice IDs
-        if: ${{ success() && github.event_name != 'workflow_dispatch' || (success() && inputs.test_notification == false) }}
+        if: ${{ success() && (github.event_name != 'workflow_dispatch' || inputs.test_notification == false) }}
         run: |
           if git diff --quiet -- animal_exam_monitor/state.json; then
             echo "No state change to commit."
