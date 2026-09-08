@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import smtplib
+import ssl
 import sys
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.message import EmailMessage
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 from urllib.parse import urljoin
 
 import requests
@@ -235,22 +238,58 @@ def pushplus(title: str, body: str) -> None:
     print("[notify] PushPlus message sent")
 
 
+def email_alert(title: str, body: str) -> None:
+    """Send a direct SMTP email when repository secrets are configured.
+
+    Defaults target QQ Mail, but all SMTP values are configurable through secrets.
+    No address, password or auth code is stored in the public repository.
+    """
+    smtp_user = os.getenv("SMTP_USER", "").strip()
+    smtp_password = os.getenv("SMTP_AUTH_CODE", "").strip()
+    recipient = os.getenv("ALERT_EMAIL", "").strip()
+    if not smtp_user or not smtp_password or not recipient:
+        return
+
+    host = os.getenv("SMTP_HOST", "smtp.qq.com").strip() or "smtp.qq.com"
+    port = int(os.getenv("SMTP_PORT", "465").strip() or "465")
+
+    msg = EmailMessage()
+    msg["Subject"] = title
+    msg["From"] = smtp_user
+    msg["To"] = recipient
+    msg.set_content(body)
+
+    context = ssl.create_default_context()
+    with smtplib.SMTP_SSL(host, port, context=context, timeout=20) as smtp:
+        smtp.login(smtp_user, smtp_password)
+        smtp.send_message(msg)
+    print("[notify] Direct email sent")
+
+
+def run_channel(name: str, func: Callable[[str, str], None], title: str, body: str) -> None:
+    """Do not let one failed notification channel suppress the others or cause spam."""
+    try:
+        func(title, body)
+    except Exception as exc:
+        print(f"[warn] notification channel {name} failed: {exc!r}", file=sys.stderr)
+
+
 def notify_new(notices: Iterable[Notice]) -> None:
     for notice in notices:
         icon = "🚨" if notice.priority == "HIGH" else "🔔"
         title = f"{icon} 湖北实验动物考试新通知：{notice.title[:80]}"
         body = (
             f"发现新的湖北省实验动物能力提升/评价通知。\n\n"
-            f"- **优先级**：{notice.priority}\n"
-            f"- **标题**：{notice.title}\n"
-            f"- **官方链接**：{notice.url}\n"
-            f"- **发现时间（UTC）**：{datetime.now(timezone.utc).isoformat()}\n\n"
-            "建议立即打开湖北省实验动物公共服务平台并尝试报名，"
-            "不要等第二次提醒。\n\n"
+            f"优先级：{notice.priority}\n"
+            f"标题：{notice.title}\n"
+            f"官方链接：{notice.url}\n"
+            f"发现时间（UTC）：{datetime.now(timezone.utc).isoformat()}\n\n"
+            "建议立即打开湖北省实验动物公共服务平台并尝试报名，不要等第二次提醒。\n\n"
             "@wenzekan80-gif"
         )
-        github_issue(title, body)
-        pushplus(title, body.replace("\n", "<br>"))
+        run_channel("github", github_issue, title, body)
+        run_channel("email", email_alert, title, body)
+        run_channel("pushplus", pushplus, title, body.replace("\n", "<br>"))
 
 
 def send_test_notification() -> None:
@@ -258,12 +297,13 @@ def send_test_notification() -> None:
     body = (
         "监控工作流已成功运行。这是一条测试通知。\n\n"
         f"官方能力提升页面：{LIST_URL}\n\n"
-        "以后发现新的通知时，会自动创建 GitHub Issue；如配置 PUSHPLUS_TOKEN，"
-        "还会同步推送到微信。\n\n"
+        "以后发现新的通知时，会自动创建 GitHub Issue；如果配置了 SMTP secrets，"
+        "会同步直接发送邮件；如果配置 PUSHPLUS_TOKEN，也会同步推送到微信。\n\n"
         "@wenzekan80-gif"
     )
-    github_issue(title, body)
-    pushplus(title, body.replace("\n", "<br>"))
+    run_channel("github", github_issue, title, body)
+    run_channel("email", email_alert, title, body)
+    run_channel("pushplus", pushplus, title, body.replace("\n", "<br>"))
 
 
 def main() -> int:
